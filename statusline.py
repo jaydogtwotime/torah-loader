@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """
-torah-loader: a Claude Code status line that shows a rotating piece of
-Torah / parsha learning while Claude Code runs.
+torah-loader: a Claude Code status line that shows Torah / parsha learning
+while Claude Code runs.
 
 Prints ONE short line per invocation. Sources content from Sefaria's free
 public API (https://www.sefaria.org/api), caches it locally for a few hours,
-rotates through verses over time, and falls back to a small bundled list of
-classic teachings when there is no network.
+and advances through the week's parsha verses IN ORDER, then through a bundled
+set of divrei torah (short teachings from Rabbi Jonathan Sacks and others), so
+it reads coherently instead of jumping around.
+
+The status line is narrow, so long verses would get cut off. Instead of
+truncating, the text SLIDES horizontally like a teleprompter: a fixed-width
+window moves across the current item a few characters at a time, paced by real
+elapsed time, so the whole verse becomes readable over several refreshes. When
+one item has fully scrolled past, the next one begins at offset zero. Progress
+is persisted in ~/.cache/torah-loader/state.json so it survives Claude Code's
+irregular status-line refreshes.
+
+Falls back to a small bundled list of verses when there is no network. Optional
+secular classic quotes stay off by default behind the classic flag.
 
 Python 3, standard library only. No pip installs. MIT licensed.
 """
@@ -23,10 +35,17 @@ import urllib.parse
 
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "torah-loader")
 CACHE_FILE = os.path.join(CACHE_DIR, "cache.json")
+STATE_FILE = os.path.join(CACHE_DIR, "state.json")
 CACHE_TTL_SECONDS = 6 * 60 * 60  # refresh from the network at most every 6h
 NET_TIMEOUT_SECONDS = 4          # keep the status line snappy
 MAX_LINE_CHARS = 120             # terminal-friendly length
-ROTATE_SECONDS = 15              # advance to the next line roughly this often
+
+# Teleprompter sliding. Claude Code refreshes the status line irregularly, so
+# advancing is gated on real elapsed time rather than on render count.
+SLIDE_INTERVAL_SECONDS = 2.5     # minimum real seconds between slide advances
+SLIDE_STEP_CHARS = 8             # characters the window moves per advance
+TRAILING_PAD_CHARS = 6           # blank tail after an item before the next one
+TAG_MAX_CHARS = 28               # source-tag width cap at the front of the line
 
 CALENDARS_URL = "https://www.sefaria.org/api/calendars"
 TEXTS_URL = "https://www.sefaria.org/api/texts/{ref}?context=0"
@@ -37,6 +56,7 @@ CLASSIC_ENV = "TORAH_LOADER_CLASSIC"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 
 # --- Bundled fallback content (used with no network) -----------------------
+# Kept in a deliberate reading order so the fallback also reads coherently.
 
 FALLBACK_VERSES = [
     ("Genesis 1:1", "In the beginning God created the heaven and the earth."),
@@ -54,6 +74,31 @@ FALLBACK_VERSES = [
     ("Isaiah 1:17", "Learn to do good; seek justice, relieve the oppressed."),
     ("Numbers 6:24", "May the Lord bless you and keep you."),
     ("Exodus 23:9", "You know the heart of a stranger, for you were strangers in the land of Egypt."),
+]
+
+# Divrei torah: short teachings from Rabbi Jonathan Sacks and other well-known
+# Torah thinkers. Default-on Torah content, folded into the rotation AFTER the
+# week's parsha verses, in a fixed reading order. These are genuine, widely
+# known ideas rendered as clearly attributed paraphrases (not invented exact
+# quotations), with a couple of well-attested lines quoted as their authors
+# said them.
+DIVREI_TORAH = [
+    ("Rabbi Jonathan Sacks", "To lead is to serve. A leader is measured by the dignity and freedom of the people they lift up."),
+    ("Rabbi Jonathan Sacks", "Chosenness is not a privilege but a responsibility, a call to be a blessing to others."),
+    ("Rabbi Jonathan Sacks", "The dignity of difference: God creates diversity, and no single people holds the whole of truth."),
+    ("Rabbi Jonathan Sacks", "Faith is not certainty. Faith is the courage to live with uncertainty."),
+    ("Rabbi Jonathan Sacks", "Judaism begins the day with gratitude, giving thanks before we ask for anything at all."),
+    ("Hillel", "What is hateful to you, do not do to your neighbor. That is the whole Torah; the rest is commentary. Go and learn."),
+    ("Maimonides (Rambam)", "The highest form of charity is to help a person become self-sufficient, so they need no charity at all."),
+    ("Maimonides (Rambam)", "Give according to your means, and give with a cheerful face; the manner of giving matters as much as the gift."),
+    ("Rabbi Akiva", "'Love your neighbor as yourself' is the great principle of the Torah."),
+    ("Rabbi Akiva", "Beloved is humanity, for every person is created in the image of God."),
+    ("Viktor Frankl", "When we can no longer change a situation, we are challenged to change ourselves."),
+    ("Viktor Frankl", "Life is never made unbearable by circumstances, only by the lack of meaning and purpose."),
+    ("Abraham Joshua Heschel", "Live in radical amazement. Get up in the morning and look at the world in a way that takes nothing for granted."),
+    ("Abraham Joshua Heschel", "Wonder, not doubt, is the root of all knowledge."),
+    ("Baal Shem Tov", "Forgetfulness leads to exile, while remembrance is the secret of redemption."),
+    ("Baal Shem Tov", "The world is full of wonders, but we take our small hand and cover our eyes and see nothing."),
 ]
 
 # Optional classic (secular) quotes. Only shown when classic mode is enabled.
@@ -104,7 +149,6 @@ def clean_text(raw):
     if isinstance(raw, list):
         raw = " ".join(str(x) for x in raw)
     text = str(raw)
-    # crude tag strip, stdlib only
     out = []
     depth = 0
     for ch in text:
@@ -116,7 +160,6 @@ def clean_text(raw):
         elif depth == 0:
             out.append(ch)
     text = "".join(out)
-    # collapse whitespace and common entities
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
     text = text.replace("&#39;", "'").replace("&quot;", '"')
     return " ".join(text.split())
@@ -124,7 +167,7 @@ def clean_text(raw):
 
 def fetch_from_sefaria():
     """
-    Returns a dict: {"label": <parsha name>, "verses": [(ref, text), ...]}.
+    Returns {"label": <parsha name>, "verses": [(ref, text), ...]} in order.
     Raises on network / parse failure so callers can fall back.
     """
     cal = http_get_json(CALENDARS_URL)
@@ -142,8 +185,6 @@ def fetch_from_sefaria():
     data = http_get_json(TEXTS_URL.format(ref=urllib.parse.quote(parsha_ref)))
     english = data.get("text") or data.get("he") or []
 
-    # A multi-chapter parasha ref comes back as a list of lists (one inner
-    # list per chapter). Flatten to individual verse strings.
     def flatten(node):
         if isinstance(node, str):
             return [node]
@@ -183,6 +224,23 @@ def save_cache(data):
         pass
 
 
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(STATE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+    except OSError:
+        pass
+
+
 def get_content():
     """Return (source_label, verses_list). Uses cache, then network, then fallback."""
     cached = load_cache()
@@ -202,28 +260,77 @@ def truncate(text, limit):
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+def window_width(tag):
+    """Characters of the sliding text window for a given source tag."""
+    prefix = "\U0001f4d6 "  # open book
+    head = "{}{}: ".format(prefix, truncate(tag, TAG_MAX_CHARS))
+    return max(10, MAX_LINE_CHARS - len(head))
+
+
+def slide_frame(key, pool):
+    """
+    Teleprompter position. Returns (idx, offset) for the current item and the
+    left edge of the visible window into its text.
+
+    Advances only once SLIDE_INTERVAL_SECONDS of real time have passed since the
+    last advance (gated by a timestamp in state, because Claude Code refreshes
+    the status line irregularly). Each advance moves the window right by
+    SLIDE_STEP_CHARS. Once the window has revealed the end of the current item
+    plus its trailing padding, the next item begins at offset zero. State resets
+    to the first item when the content pool (key) or its length changes, so the
+    reading always progresses in order.
+    """
+    now = time.time()
+    n = len(pool)
+    state = load_state()
+    if state.get("key") == key and state.get("n") == n:
+        idx = int(state.get("idx", 0)) % n
+        offset = int(state.get("offset", 0))
+        if now - float(state.get("advanced_at", 0)) >= SLIDE_INTERVAL_SECONDS:
+            tag, text = pool[idx]
+            width = window_width(tag)
+            display_len = len(text) + TRAILING_PAD_CHARS
+            if offset + width >= display_len:
+                # The end of this item (with padding) is already in view: next.
+                idx = (idx + 1) % n
+                offset = 0
+            else:
+                offset += SLIDE_STEP_CHARS
+            save_state({"key": key, "n": n, "idx": idx,
+                        "offset": offset, "advanced_at": now})
+        return idx, offset
+    # New pool or first run: start at the beginning.
+    save_state({"key": key, "n": n, "idx": 0, "offset": 0, "advanced_at": now})
+    return 0, 0
+
+
 def render():
     label, verses = get_content()
 
-    # Optionally fold in classic quotes.
+    # Default rotation: the week's parsha verses in order, then divrei torah.
     pool = list(verses)
+    pool += [(src, txt) for src, txt in DIVREI_TORAH]
+    # Classic secular quotes stay opt-in behind the classic flag.
     if classic_enabled():
-        pool += [("{}".format(who), quote) for who, quote in CLASSIC_QUOTES]
+        pool += [(who, quote) for who, quote in CLASSIC_QUOTES]
 
     if not pool:
         return "\U0001f4d6 Torah loading…"
 
-    # Rotate based on a slowly-changing clock value.
-    idx = int(time.time() // ROTATE_SECONDS) % len(pool)
-    ref, text = pool[idx]
+    key = (label or "fallback") + "+divrei" + ("+classic" if classic_enabled() else "")
+    idx, offset = slide_frame(key, pool)
+    tag, text = pool[idx]
 
     prefix = "\U0001f4d6 "  # open book
-    # Budget: prefix + "ref: " + text, all under MAX_LINE_CHARS.
-    ref = truncate(ref, 40)
-    head = "{}{}: ".format(prefix, ref)
-    remaining = MAX_LINE_CHARS - len(head)
-    line = head + truncate(text, max(10, remaining))
-    return line
+    tag = truncate(tag, TAG_MAX_CHARS)
+    head = "{}{}: ".format(prefix, tag)
+    width = max(10, MAX_LINE_CHARS - len(head))
+
+    # Slide a fixed-width window across the item, padded so it clears before the
+    # next item starts.
+    display = text + (" " * TRAILING_PAD_CHARS)
+    window = display[offset:offset + width]
+    return (head + window).rstrip()
 
 
 def main():

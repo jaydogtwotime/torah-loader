@@ -1,9 +1,8 @@
 # torah-loader
 
 A tiny Claude Code add-on that turns loading time into learning time. It puts a
-rotating piece of Torah / Parashat Hashavua learning in your status line while
-Claude Code runs, so you pick up a verse or a teaching every time you glance
-down.
+piece of Torah / Parashat Hashavua learning in your status line while Claude
+Code runs, so you pick up a verse or a teaching every time you glance down.
 
 One Python file, standard library only. No pip installs, no build step.
 
@@ -11,14 +10,43 @@ One Python file, standard library only. No pip installs, no build step.
 
 - Fetches the current week's Torah portion (Parashat Hashavua) from
   [Sefaria's](https://www.sefaria.org) free public API.
-- Prints one short line per status-line render: a source label plus a verse or
-  teaching, kept under ~120 characters so it fits a terminal.
-- Rotates the line over time so you see a different verse as you work.
+- Prints one line per status-line render: a short source tag plus the text of
+  the current verse or teaching.
+- Slides long text horizontally like a teleprompter (see below), so nothing
+  gets cut off. The status line is narrow, so instead of truncating a verse it
+  scrolls the whole thing into view over a few seconds.
+- Reads coherently and in order: verse 1 fully, then verse 2, and so on
+  through the portion, then a bundled set of divrei torah.
 - Caches the API response locally for 6 hours, so it does not hit the network
   on every render.
-- Falls back to a bundled set of ~15 classic verses and teachings when there is
-  no network, so the status line never breaks.
+- Falls back to a bundled set of ~15 verses when there is no network, so the
+  status line never breaks.
 - Optional: fold in a bundled set of classic (secular) quotes, off by default.
+
+## Teleprompter sliding
+
+Each item scrolls left to right through a fixed-width window. Every couple of
+seconds of real time (Claude Code refreshes the status line irregularly, so the
+pace is gated on a timestamp, not on render count) the window advances a few
+characters. Once a verse has fully scrolled past, the next one begins at the
+start. A short source tag stays pinned at the front (the parsha reference or the
+author) so you always know where the text is from. Reading progress is persisted
+in `~/.cache/torah-loader/state.json`, so it picks up where it left off across
+refreshes and sessions.
+
+Tune the feel at the top of the script: `SLIDE_INTERVAL_SECONDS` (how often the
+window moves), `SLIDE_STEP_CHARS` (how far it moves each time), and
+`MAX_LINE_CHARS` (the total line width, which sets the window size).
+
+## Divrei torah
+
+After the week's parsha verses, the rotation moves through a bundled set of
+short divrei torah: genuine, well-known teachings from Rabbi Jonathan Sacks
+(covenant and conversation themes such as to lead is to serve, chosenness as
+responsibility, and the dignity of difference) plus Hillel, Maimonides, Rabbi
+Akiva, Viktor Frankl, Abraham Joshua Heschel, and the Baal Shem Tov. This Torah
+content is on by default. The secular classic quotes below are separate and
+stay opt-in.
 
 ## Install
 
@@ -70,18 +98,10 @@ To force a refresh, delete the cache file:
 rm ~/.cache/torah-loader/cache.json
 ```
 
-## Rotation
-
-The visible line advances roughly every 15 seconds. It is chosen from the
-current portion's verses (or the fallback list) by a slowly-changing clock
-value, so glancing down at different moments shows different learning without
-jumping on every single render. Tune `ROTATE_SECONDS` at the top of the script
-if you want it faster or slower.
-
 ## Optional: classic (secular) quotes
 
 Off by default. When enabled, a small bundled set of classic quotes (Marcus
-Aurelius, Seneca, Lao Tzu, and so on) is mixed into the rotation alongside the
+Aurelius, Seneca, Lao Tzu, and so on) is appended to the rotation after the
 Torah content. Turn it on either way:
 
 - Environment variable:
