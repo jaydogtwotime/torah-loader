@@ -72,7 +72,7 @@ rm ~/.cache/torah-loader/cache.json
 
 ## Rotation
 
-The visible line advances roughly every 45 seconds. It is chosen from the
+The visible line advances roughly every 15 seconds. It is chosen from the
 current portion's verses (or the fallback list) by a slowly-changing clock
 value, so glancing down at different moments shows different learning without
 jumping on every single render. Tune `ROTATE_SECONDS` at the top of the script

@@ -26,7 +26,7 @@ CACHE_FILE = os.path.join(CACHE_DIR, "cache.json")
 CACHE_TTL_SECONDS = 6 * 60 * 60  # refresh from the network at most every 6h
 NET_TIMEOUT_SECONDS = 4          # keep the status line snappy
 MAX_LINE_CHARS = 120             # terminal-friendly length
-ROTATE_SECONDS = 45              # advance to the next line roughly this often
+ROTATE_SECONDS = 15              # advance to the next line roughly this often
 
 CALENDARS_URL = "https://www.sefaria.org/api/calendars"
 TEXTS_URL = "https://www.sefaria.org/api/texts/{ref}?context=0"
