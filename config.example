@@ -1,0 +1,7 @@
+# torah-loader config
+# Copy this file to "config" (same folder) to enable options.
+# Lines starting with # are ignored.
+
+# Mix bundled classic (secular) quotes into the rotation. Off by default.
+# Accepts: on / off / 1 / 0 / true / false / yes / no
+classic=off
